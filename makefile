@@ -3,6 +3,8 @@ CFLAGS = -g -Wall -std=gnu99
 
 SRC_DIRS = .
 
+SRC = $(foreach dir,$(SRC_DIRS),$(wildcard $(dir)/*.c))
+
 # Convert foo/bar.c -> build/foo/bar.o
 OBJ = $(patsubst %.c,build/%.o,$(SRC))
 

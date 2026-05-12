@@ -69,7 +69,7 @@ void registry_free(struct REG_KEY * current);
 
 //query the value of a key
 //returns 1 on success and 0 on failure
-int registry_query_key(struct REGISTRY_HIVE * hive, char * target_key, unsigned char ** data);
+int registry_query_key(struct REGISTRY_HIVE * hive, char * target_key, unsigned char ** data, int * length);
 
 //make reg_key data type that stores the current path and all values for that key
 //walk down the registry recursively until we find the target key

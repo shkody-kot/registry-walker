@@ -92,7 +92,7 @@ void registry_free(struct REG_KEY * root)
 
 //query the value of a key
 //returns 1 on success and 0 on failure
-int registry_query_key(struct REGISTRY_HIVE * hive, char * target_key, unsigned char ** data)
+int registry_query_key(struct REGISTRY_HIVE * hive, char * target_key, unsigned char ** data, int * length)
 {
 	//walk down the registry to find the key we want
 	struct REG_KEY * target = malloc(sizeof(struct REG_KEY));
@@ -102,6 +102,7 @@ int registry_query_key(struct REGISTRY_HIVE * hive, char * target_key, unsigned 
 			
 	*data = calloc(target->data_size, sizeof(unsigned char));	
 	memcpy(*data, target->data, target->data_size);
+	*length = target->data_size;
 	
 	printf("[registry] found %s to be ", target->name);
 	for (int i = 0; i < target->data_size; i++) { printf("%c", (*data)[i]); }
