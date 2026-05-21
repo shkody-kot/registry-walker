@@ -27,6 +27,8 @@
 #define VALUE_SIZE		0x00
 #define VK_NAME_LENGTH	0x06
 #define DATA_LENGTH		0x08
+#define CLASS_LENGTH	0x4E
+#define CLASS_INDEX		0x34
 
 #define MAX_LEN 		1024
 #define RESIDENT 		0x80000000
@@ -70,6 +72,10 @@ void registry_free(struct REG_KEY * current);
 //query the value of a key
 //returns 1 on success and 0 on failure
 int registry_query_key(struct REGISTRY_HIVE * hive, char * target_key, unsigned char ** data, int * length);
+
+//query the hidden class information of a key (for the bootkey)
+//calls query key to get the key requested and then fetches the class info
+int registry_query_key_class(struct REGISTRY_HIVE * hive, char * target_key, unsigned char ** data);
 
 //make reg_key data type that stores the current path and all values for that key
 //walk down the registry recursively until we find the target key

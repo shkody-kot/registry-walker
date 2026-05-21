@@ -43,7 +43,7 @@ int main(int argc, char ** argv, char ** envp)
 {
 	if (argc > 1) { help(); return 1; }
 	
-	char * hive_path = calloc(1024, sizeof(char));
+	char * hive_path = calloc(256, sizeof(char));
 	char * keypath;
 	struct REGISTRY_HIVE * hive;
 	int done = 0;
@@ -51,7 +51,7 @@ int main(int argc, char ** argv, char ** envp)
 	
 	printf("REGISTRY WALK\n");
 	printf("Please enter the path to the registry hive: ");
-	hive_path = get_input(1024);
+	hive_path = get_input(256);
 	
 	ok = load_hive(hive_path, &hive);
 	if (!ok)
@@ -67,9 +67,9 @@ int main(int argc, char ** argv, char ** envp)
 	printf("EXAMPLE: ROOT\\ControlSet001\\Control\\TimeZoneInformation\\TimeZoneNameKey\n");
 	while(!done)
 	{
-		keypath = calloc(1024, sizeof(char));
+		keypath = calloc(256, sizeof(char));
 		printf("[registry] key: ");
-		keypath = get_input(1024);
+		keypath = get_input(256);
 		
 		if (strcmp(keypath, "q") == 0)
 		{
@@ -85,10 +85,11 @@ int main(int argc, char ** argv, char ** envp)
 			if (!ok) { printf("[registry] key query failed"); }
 			
 			printf("Is this key a known string type? (y/n) ");
-			int c;
+			int mode = getchar();
+			char c;
 			while ((c = getchar()) != '\n' && c != EOF);
 			
-			switch(c)
+			switch(mode)
 			{
 				case 'y':
 				{

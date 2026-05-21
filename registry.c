@@ -45,8 +45,7 @@ int load_hive(char * hive_path, struct REGISTRY_HIVE ** hive)
 	(*hive)->data = calloc(filesize, sizeof(uint8_t));
 	
 	//read the entire thing into memory because who cares about space efficiency
-	int fd = fileno(file);
-	read(fd, (*hive)->data, filesize);
+	fread((*hive)->data, sizeof(unsigned char), filesize, file);
 	
 	//get the offset of the root key of the registry
 	//root cell offset lives at 0x24 and points to the top level key of a hive
@@ -56,6 +55,7 @@ int load_hive(char * hive_path, struct REGISTRY_HIVE ** hive)
 	rootkey->valuekey = NULL;
 	rootkey->subkey = NULL;
 	rootkey->parent = NULL;
+	rootkey->scanned = 0;
 	
 	rootkey->offset = 0x1020;
 	(*hive)->root = rootkey;
@@ -84,10 +84,20 @@ int close_hive(struct REGISTRY_HIVE * hive)
 
 void registry_free(struct REG_KEY * root)
 {
+	if (root == NULL) { return; }
+	
 	struct REG_KEY * current = root;
+	
+	//printf("[registry] Trying to free %s\n", current->name);
+	
 	if (current->subkey != NULL) { registry_free(current->subkey); }
 	if (current->nextkey != NULL) { registry_free(current->nextkey); }
-	free(root);  
+	if (current->valuekey != NULL) { registry_free(current->valuekey); }
+	if (current->data != NULL) { free(current->data); }
+	if (current->name != NULL) { free(current->name); }
+	
+	free(current);  
+	return;
 }
 
 //query the value of a key
@@ -102,11 +112,53 @@ int registry_query_key(struct REGISTRY_HIVE * hive, char * target_key, unsigned 
 			
 	*data = calloc(target->data_size, sizeof(unsigned char));	
 	memcpy(*data, target->data, target->data_size);
-	*length = target->data_size;
+	memcpy(length, &target->data_size, 4);
 	
 	printf("[registry] found %s to be ", target->name);
-	for (int i = 0; i < target->data_size; i++) { printf("%c", (*data)[i]); }
+	for (int i = 0; i < target->data_size; i++) { printf("%02x", (*data)[i]); }
 	printf("\n");
+	
+	return 1;
+}
+
+//get the hidden class information about a key
+int registry_query_key_class(struct REGISTRY_HIVE * hive, char * target_key, unsigned char ** data)
+{
+	//walk down the registry to find the key we want
+	struct REG_KEY * target = malloc(sizeof(struct REG_KEY));
+	int level = 0;
+
+	if (!registry_walk(hive, hive->root, target_key, level, &target)) { printf("[registry] walk failed\n"); }
+	
+	//navigate to class offset	
+	int class_length = 0;
+	uint32_t class_address = 0;
+	
+	memcpy(&class_length, hive->data + target->offset + CLASS_LENGTH, 2);
+	memcpy(&class_address, hive->data + target->offset + CLASS_INDEX, ADDRESS);
+	class_address += HEADER;
+	class_address += ADDRESS;
+	
+	unsigned char * temp = calloc(class_length, sizeof(unsigned char));
+	
+	// we'll not store this info but just stick it in output immediately 
+	// in case the key has its own data
+	*data = calloc(class_length / 2, sizeof(unsigned char));
+	memcpy(temp, hive->data + class_address, class_length);
+	
+	int index= 0;
+	for (int i = 0; i < class_length; i++) 
+	{ 
+		if (temp[i]) 
+		{ 
+			memcpy(*data + index, temp + i, 1); 
+			index++;
+		} 
+	}
+	
+	printf("[registry key class] found %s class info to be %s\n", target->name, *data);
+	
+	free(temp);
 	
 	return 1;
 }
@@ -139,8 +191,8 @@ int registry_walk(struct REGISTRY_HIVE * hive, struct REG_KEY * current_key, cha
 	//get the token of the target key at the needed depth (level) via strtok
 	int position = 0;	//where we are in the target key vs where we need to be
 
-	char * keypart = calloc(1024, sizeof(char));
-	char * next_keypart = calloc(1024, sizeof(char));
+	char * keypart = calloc(64, sizeof(char));
+	char * next_keypart = calloc(64, sizeof(char));
 	int next_count = 0;
 	int count = 0;
 	for (int index = 0; index < strlen(target_key) && position <= level; index++)
@@ -167,7 +219,7 @@ int registry_walk(struct REGISTRY_HIVE * hive, struct REG_KEY * current_key, cha
 		}
 	}
 	
-	printf("[registry] seeking path part: %s at %d out of %d, currently on %s\n", keypart, position, total_depth, current->name);
+	//printf("[registry] seeking path part: %s at %d out of %d, currently on %s\n", keypart, position, total_depth, current->name);
 	
 	for (int index = count + 1; index < strlen(target_key); index++)
 	{
@@ -183,24 +235,28 @@ int registry_walk(struct REGISTRY_HIVE * hive, struct REG_KEY * current_key, cha
 	{
 		if (!registry_scan_keys(hive, &current)) { printf("[registry] scan failed\n"); }
 		
-		printf("[registry] current key %s correct\n", current->name);
+		//printf("[registry] current key %s correct\n", current->name);
 		if (level == total_depth) 
 		{ 
 			//printf("[registry] current key %s correct\n", current->name);
 			memcpy(*out, current, sizeof(struct REG_KEY));
+			free(keypart);
+			free(next_keypart);
 			return 1; 
 		}
 		else 
 		{			
 			//check all value keys first
 			struct REG_KEY * tmp = current->valuekey;
-			while (tmp != NULL && tmp->nextkey != NULL) 
+			while (tmp != NULL) 
 			{
-				printf("[registry] checking value  %s for %s\n", tmp->name, next_keypart);
+				//printf("[registry] checking value  %s for %s\n", tmp->name, next_keypart);
 				if (strncasecmp(tmp->name, next_keypart, strlen(next_keypart)) == 0) 
 				{ 
-					printf("[registry] current value key %s correct\n", tmp->name);
+					//printf("[registry] current value key %s correct\n", tmp->name);
 					memcpy(*out, tmp, sizeof(struct REG_KEY));
+					free(keypart);
+					free(next_keypart);
 					return 1; 
 				}
 				tmp = tmp->nextkey;
@@ -214,6 +270,8 @@ int registry_walk(struct REGISTRY_HIVE * hive, struct REG_KEY * current_key, cha
 	else { registry_walk(hive, current->nextkey, target_key, level, out); }
 	
 	//memcpy(*out, current, sizeof(struct REG_KEY));
+	free(keypart);
+	free(next_keypart);
 	return 1;
 }
 //maps all values in a key
@@ -233,7 +291,10 @@ int registry_scan_keys(struct REGISTRY_HIVE * hive, struct REG_KEY ** root)
 	
 	//check if we've already scanned this key
 	if (current->scanned) { return 1; }
-	
+	//initialize the key
+	current->data = NULL;
+	current->valuekey = NULL;
+	current->subkey = NULL;
 	
 	//get the number of values
 	int num_values = 0;
@@ -241,9 +302,9 @@ int registry_scan_keys(struct REGISTRY_HIVE * hive, struct REG_KEY ** root)
 	int name_length;
 	memcpy(&num_values, hive->data + current->offset + VALUE_COUNT, NUM_SUBKEYS);
 
-	printf("[registry scan] There are %d values in key %s\n", num_values, current->name);
+	//printf("[registry scan] There are %d values in key %s\n", num_values, current->name);
 	
-	if (!num_values) { current->data = NULL; }
+	if (!num_values) { current->valuekey = NULL; }
 	else
 	{
 		//set values as keys
@@ -259,15 +320,19 @@ int registry_scan_keys(struct REGISTRY_HIVE * hive, struct REG_KEY ** root)
 		struct REG_KEY * tempkey;
 		valuekey->parent = current;
 		valuekey->valuekey = NULL; 
+		valuekey->subkey = NULL;
+		valuekey->nextkey = NULL;
+		valuekey->data = NULL;
 		memcpy(&valuekey->offset, address, ADDRESS);
 		valuekey->offset += HEADER;
-		next = valuekey;
+		valuekey->scanned = 0;
+		next = valuekey;		
 	
 		current->valuekey = next;
 		
 		//loop through all values
 		for (int index = 0; index < num_values; index++)
-		{
+		{			
 			//set the name
 			name_length = 0;
 			memcpy(&name_length, hive->data + next->offset + VK_NAME_LENGTH, 2);
@@ -276,7 +341,6 @@ int registry_scan_keys(struct REGISTRY_HIVE * hive, struct REG_KEY ** root)
 				name_length = 9;
 				next->name = calloc(name_length, sizeof(char));
 				sprintf(next->name, "(Default)");
-				
 			}
 			else 
 			{
@@ -284,19 +348,19 @@ int registry_scan_keys(struct REGISTRY_HIVE * hive, struct REG_KEY ** root)
 				memcpy(next->name, hive->data + next->offset + VK_KEY_NAME, name_length);
 			}
 			
-			printf("[registry scan] added valuekey %s at address ", next->name);
-			for (int i = 0; i < ADDRESS; i++) { printf("%02x", address[i]); }
-			printf(" to %s\n", current->name);
+			//printf("[registry scan] added valuekey %s at address ", next->name);
+			//for (int i = 0; i < ADDRESS; i++) { printf("%02x", address[i]); }
+			//printf(" to %s\n", current->name);
 			
 			//check if the data is resident
 			//get the highest order bit to check for residency; 1 = reisdent, 0 = non-resident
-			int data_size;
+			int data_size = 0;
 			memcpy(&data_size, hive->data + next->offset + DATA_LENGTH, ADDRESS);
 			next->data_size = data_size;
 			if (data_size >= RESIDENT)
 			{
 				//if data is resident, all of it (max 4 bytes) lives at 0xC0
-				printf("[registry scan] data is resident\n");
+				//printf("[registry scan] data is resident\n");
 				data_size -= RESIDENT;
 				next->data = calloc(data_size, sizeof(unsigned char));
 				memcpy(next->data, hive->data + next->offset + DATA_CELL, data_size);
@@ -307,23 +371,27 @@ int registry_scan_keys(struct REGISTRY_HIVE * hive, struct REG_KEY ** root)
 				int data_address;
 				memcpy(&data_address, hive->data + next->offset + DATA_CELL, ADDRESS);
 				data_address += HEADER;
-				printf("[registry scan] data is at offset %d with size of %d\n", data_address, data_size);
+				//printf("[registry scan] data is at offset %d with size of %d\n", data_address, data_size);
 				
 				//copy data
 				next->data = calloc(data_size, sizeof(unsigned char));
 				memcpy(next->data, hive->data + data_address + ADDRESS, data_size);
 			}
-
-			//increment address   
-			list_address = list_address + ADDRESS;		
-			int_address = 0;
-			memcpy(address, hive->data + list_address, ADDRESS);
 			
-			memcpy(&int_address, address, ADDRESS);
-			int_address += HEADER;
+			if (index < (num_values - 1))
+			{
+				//increment address   
+				list_address = list_address + ADDRESS;		
+				int_address = 0;
+				memcpy(address, hive->data + list_address, ADDRESS);
+				
+				memcpy(&int_address, address, ADDRESS);
+				int_address += HEADER;
+				
+				tempkey = set_next(next, current, int_address);
+				next = tempkey;
+			}
 			
-			tempkey = set_next(next, current, int_address);
-			next = tempkey;
 		}
 	}
 	
@@ -338,7 +406,7 @@ int registry_scan_keys(struct REGISTRY_HIVE * hive, struct REG_KEY ** root)
 	int num_subkeys = 0;
 	memcpy(&num_subkeys, hive->data + current->offset + SUBKEY_COUNT, NUM_SUBKEYS);
 	
-	printf("[registry scan] There are %d subkeys in key %s\n", num_subkeys, current->name);
+	//printf("[registry scan] There are %d subkeys in key %s\n", num_subkeys, current->name);
 	
 	if (!num_subkeys) { current->subkey = NULL; }
 	else 
@@ -355,10 +423,15 @@ int registry_scan_keys(struct REGISTRY_HIVE * hive, struct REG_KEY ** root)
 		memcpy(&name_length, hive->data + subkey->offset + NK_NAME_LENGTH, 2);
 		memcpy(subkey->name, hive->data + subkey->offset + NK_KEY_NAME, name_length);
 		
-		printf("[registry scan] added subkey %s at address ", subkey->name);
-		for (int i = 0; i < ADDRESS; i++) { printf("%02x", address[i]); }
-		printf(" to %s\n", current->name);
+		//printf("[registry scan] added subkey %s at address ", subkey->name);
+		//for (int i = 0; i < ADDRESS; i++) { printf("%02x", address[i]); }
+		//printf(" to %s\n", current->name);
 		subkey->parent = current;
+		subkey->scanned = 0;
+		subkey->subkey = NULL;
+		subkey->valuekey = NULL;
+		subkey->nextkey = NULL;
+		subkey->data = NULL;
 		next = subkey;
 		current->subkey = subkey;
 		
@@ -382,9 +455,9 @@ int registry_scan_keys(struct REGISTRY_HIVE * hive, struct REG_KEY ** root)
 			memcpy(&name_length, hive->data + next->offset + NK_NAME_LENGTH, 2);
 			
 			memcpy(next->name, hive->data + next->offset + NK_KEY_NAME, name_length);
-			printf("[registry scan] added subkey %s at address ", next->name);
-			for (int i = 0; i < ADDRESS; i++) { printf("%02x", address[i]); }
-			printf(" to %s\n", current->name);
+			//printf("[registry scan] added subkey %s at address ", next->name);
+			//for (int i = 0; i < ADDRESS; i++) { printf("%02x", address[i]); }
+			//printf(" to %s\n", current->name);
 		}
 	}
 	
@@ -403,6 +476,7 @@ struct REG_KEY * set_next(struct REG_KEY * prev, struct REG_KEY * parent, uint32
 	current->nextkey = NULL;
 	current->subkey = NULL;
 	current->valuekey = NULL;
+	current->data = NULL;
 	
 	prev->nextkey = current;
 	
